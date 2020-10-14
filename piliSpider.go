@@ -21,7 +21,7 @@ const (
 	danmeiCatgory = "/7_"
 	novelPath     = "testMultiReqs/"
 	pagesBatch    = 5
-	allPages      = 50
+	endPage       = 50
 	beginPage     = 1
 	maxRetryTimes = 10
 )
@@ -29,31 +29,36 @@ const (
 var novelNums int32
 
 func main() {
-	var endPage int
 	beginTime := time.Now()
 	novelNums = 0
-	startPage := beginPage
 	log.Printf("开始爬取, 当前时间:%v\n", beginTime)
 
-	for startPage <= allPages {
-		endPage = startPage + pagesBatch
-		wgGroup := &sync.WaitGroup{}
-		wgGroup.Add(pagesBatch)
-		for i := startPage; i < endPage; i++ {
-			go func(indexPage int, wgGroup *sync.WaitGroup) {
+	finCh := make(chan (int), 1)
+	finCh <- pagesBatch
+	wg := &sync.WaitGroup{}
+
+	for indexPage := beginPage; indexPage < endPage; {
+		pages := <-finCh
+		wg.Add(pages)
+		for i := 0; i < pages; i++ {
+			go func(indexPage int, finCh chan int, wg *sync.WaitGroup) {
 				parseIndex(indexPage)
-				wgGroup.Done()
-			}(i, wgGroup)
+				finCh <- 1
+				wg.Done()
+			}(indexPage, finCh, wg)
+			indexPage++
 		}
-		wgGroup.Wait()
-		startPage = endPage
 	}
 
+	wg.Wait()
 	endTime := time.Now()
 	log.Printf("全部爬取完毕, 当前时间:%v, 耗时：%v, 共爬取 %v 本小说\n", endTime, endTime.Sub(beginTime), novelNums)
 }
 
 func parseIndex(indexPage int) {
+	log.Printf("开始爬取 page %v\n", indexPage)
+	log.Print("--------------------------------------------")
+
 	indexUrl := piliEndpoint + danmeiCatgory + strconv.Itoa(indexPage) + "/"
 	doc := fetch(indexUrl)
 	nodes := htmlquery.Find(doc, `//div[@class="books"]/div/h3/a`)
@@ -68,6 +73,7 @@ func parseIndex(indexPage int) {
 		}(htmlquery.SelectAttr(node, "href"), wgGroup)
 	}
 	wgGroup.Wait()
+
 	log.Printf("page %v 爬取完毕\n", indexPage)
 	log.Print("--------------------------------------------")
 }
@@ -87,9 +93,13 @@ func parseBookChaps(url string) {
 	for _, node := range nodes {
 		contentName := htmlquery.InnerText(node)
 		contentName = cvtStrEncoding(contentName, "gbk", "utf-8")
-		file.WriteString(contentName + "\n")
+		if _, err = file.WriteString(contentName + "\n"); err != nil {
+			log.Fatal(err)
+		}
 		content := parseChapContents(piliEndpoint + htmlquery.SelectAttr(node, "href"))
-		file.WriteString(content)
+		if _, err = file.WriteString(content); err != nil {
+			log.Fatal(err)
+		}
 	}
 	if err = file.Close(); err != nil {
 		log.Fatal(err)
