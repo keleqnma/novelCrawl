@@ -2,31 +2,40 @@ package main
 
 import (
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/antchfx/htmlquery"
 	"github.com/axgle/mahonia"
 	"golang.org/x/net/html"
-	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 const (
-	piliEndpoint = "https://www.pilibook.com"
-	catgory      = "/7_"
-	// novelsBatch  = 10
-	pagesBatch = 2
+	piliEndpoint  = "https://www.pilibook.com"
+	danmeiCatgory = "/7_"
+	novelPath     = "testMultiReqs/"
+	pagesBatch    = 5
+	allPages      = 50
+	beginPage     = 1
+	maxRetryTimes = 10
 )
 
-var enc = simplifiedchinese.GBK
+var novelNums int32
 
 func main() {
 	var endPage int
-	allPages := 50
-	for startPage := 1; startPage <= allPages; {
+	beginTime := time.Now()
+	novelNums = 0
+	startPage := beginPage
+	log.Printf("开始爬取, 当前时间:%v\n", beginTime)
+
+	for startPage <= allPages {
 		endPage = startPage + pagesBatch
 		wgGroup := &sync.WaitGroup{}
 		wgGroup.Add(pagesBatch)
@@ -37,12 +46,15 @@ func main() {
 			}(i, wgGroup)
 		}
 		wgGroup.Wait()
-		startPage += endPage
+		startPage = endPage
 	}
+
+	endTime := time.Now()
+	log.Printf("全部爬取完毕, 当前时间:%v, 耗时：%v, 共爬取 %v 本小说\n", endTime, endTime.Sub(beginTime), novelNums)
 }
 
 func parseIndex(indexPage int) {
-	indexUrl := piliEndpoint + catgory + strconv.Itoa(indexPage) + "/"
+	indexUrl := piliEndpoint + danmeiCatgory + strconv.Itoa(indexPage) + "/"
 	doc := fetch(indexUrl)
 	nodes := htmlquery.Find(doc, `//div[@class="books"]/div/h3/a`)
 
@@ -56,6 +68,8 @@ func parseIndex(indexPage int) {
 		}(htmlquery.SelectAttr(node, "href"), wgGroup)
 	}
 	wgGroup.Wait()
+	log.Printf("page %v 爬取完毕\n", indexPage)
+	log.Print("--------------------------------------------")
 }
 
 func parseBookChaps(url string) {
@@ -64,7 +78,7 @@ func parseBookChaps(url string) {
 	bookName = cvtStrEncoding(bookName, "gbk", "utf-8")
 	bookName += ".txt"
 
-	file, err := os.Create("books/" + bookName)
+	file, err := os.Create(novelPath + bookName)
 	if err != nil {
 		log.Fatal("file create err:", bookName, err)
 	}
@@ -75,11 +89,13 @@ func parseBookChaps(url string) {
 		contentName = cvtStrEncoding(contentName, "gbk", "utf-8")
 		file.WriteString(contentName + "\n")
 		content := parseChapContents(piliEndpoint + htmlquery.SelectAttr(node, "href"))
-		file.WriteString(content + "\n")
+		file.WriteString(content)
 	}
 	if err = file.Close(); err != nil {
 		log.Fatal(err)
 	}
+	atomic.AddInt32(&novelNums, 1)
+	log.Printf("小说 %v 爬取完毕\n", bookName)
 }
 
 func parseChapContents(url string) (res string) {
@@ -96,17 +112,23 @@ func parseChapContents(url string) (res string) {
 }
 
 func fetch(url string) *html.Node {
-	log.Println("Fetch Url", url)
+	var (
+		resp       *http.Response
+		retryTimes float64
+		err        error
+	)
+
 	client := &http.Client{}
 	req, _ := http.NewRequest("GET", url, nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatal("Http get err:", err)
+
+	for resp, err = client.Do(req); (err != nil || resp.StatusCode != 200) && retryTimes < maxRetryTimes; {
+		log.Printf("Http get err:", err)
+		log.Printf("Http status code:", resp.StatusCode)
+		log.Printf("Retry %v times", retryTimes)
+		time.Sleep(time.Microsecond * time.Duration((math.Pow(2, retryTimes))))
 	}
-	if resp.StatusCode != 200 {
-		log.Fatal("Http status code:", resp.StatusCode)
-	}
+
 	defer resp.Body.Close()
 	doc, err := htmlquery.Parse(resp.Body)
 	if err != nil {
