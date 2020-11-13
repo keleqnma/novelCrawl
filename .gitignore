@@ -1,4 +1,5 @@
 .DS_Store
-.vscode/launch.json
+.vscode/
 testMultiReqs/
 books/
+download/
