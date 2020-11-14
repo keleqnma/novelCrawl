@@ -1,41 +1,62 @@
-package cocoSpider
+package httpClient
 
 import (
+	"cocoSpider/dnsCache"
 	"log"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/antchfx/htmlquery"
 	"golang.org/x/net/html"
 )
 
-func fetch(url string) *html.Node {
+type Client struct {
+	c        *http.Client
+	dnsCache *dnsCache.Resolver
+}
+
+const maxRetryTimes = 10
+
+func New() *Client {
+	client := &Client{}
+	client.dnsCache = dnsCache.New(time.Minute * 5)
+	client.c = &http.Client{
+		Transport: &http.Transport{
+			MaxIdleConnsPerHost: 64,
+			Dial: func(network string, address string) (net.Conn, error) {
+				separator := strings.LastIndex(address, ":")
+				ip, _ := client.dnsCache.FetchOneString(address[:separator])
+				return net.Dial("tcp", ip+address[separator:])
+			},
+		},
+	}
+	return client
+}
+
+func (client *Client) Fetch(url string) *html.Node {
 	var (
 		resp       *http.Response
 		retryTimes float64
 		err        error
 	)
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			//TODO
-		},
-	}
 	req, _ := http.NewRequest("GET", url, nil)
 
 	req.Header.Set("User-Agent", getAgent())
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Connection", "keep-alive")
 
-	for resp, err = client.Do(req); (err != nil || (resp != nil && resp.StatusCode != 200)) && retryTimes < maxRetryTimes; {
-		log.Printf("Http get err: %v, url: %v", err, url)
+	for resp, err = client.c.Do(req); (err != nil || (resp != nil && resp.StatusCode != 200)) && retryTimes < maxRetryTimes; retryTimes += 1 {
+		log.Printf("Http get err: %v, url: %v, req: %v", err, url, req)
 		if resp != nil {
-			log.Printf("Http status code: %v", resp.StatusCode)
+			log.Printf("Http Responce: %v", resp)
 		}
 		log.Printf("Retry %v times", retryTimes)
-		time.Sleep(time.Millisecond * time.Duration((math.Pow(10, retryTimes))))
+		time.Sleep(time.Second * time.Duration((math.Pow(2, retryTimes))))
 		req.Header.Set("User-Agent", getAgent())
 	}
 
