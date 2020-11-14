@@ -15,55 +15,75 @@ import (
 )
 
 type Client struct {
-	c        *http.Client
 	dnsCache *dnsCache.Resolver
+	//proxyPool  *proxyPool.ProxyPool
+	clients    []*http.Client
+	clientSize int
 }
 
-const maxRetryTimes = 10
+const maxRetryTimes = 12
 
-func New() *Client {
+func New(clientSize int, endPoint string) *Client {
 	client := &Client{}
 	client.dnsCache = dnsCache.New(time.Minute * 5)
-	client.c = &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConnsPerHost: 64,
-			Dial: func(network string, address string) (net.Conn, error) {
-				separator := strings.LastIndex(address, ":")
-				ip, _ := client.dnsCache.FetchOneString(address[:separator])
-				return net.Dial("tcp", ip+address[separator:])
+	//client.proxyPool = proxyPool.New(endPoint)
+	for i := 0; i < clientSize; i++ {
+		// proxy, err := url.Parse(client.proxyPool.GetProxy())
+		// if err != nil {
+		// 	log.Printf("parse proxy failed:%v\n", err)
+		// 	continue
+		// }
+		client.clients = append(client.clients, &http.Client{
+			Timeout: time.Second * 10,
+			Transport: &http.Transport{
+				//Proxy:               http.ProxyURL(proxy),
+				MaxIdleConnsPerHost: clientSize,
+				Dial: func(network string, address string) (net.Conn, error) {
+					separator := strings.LastIndex(address, ":")
+					ip, _ := client.dnsCache.FetchOneString(address[:separator])
+					return net.Dial("tcp", ip+address[separator:])
+				},
 			},
-		},
+		})
 	}
+	client.clientSize = clientSize
 	return client
 }
 
-func (client *Client) Fetch(url string) *html.Node {
+func (client *Client) getClient() *http.Client {
+	return client.clients[rand.Int()%client.clientSize]
+}
+
+func (client *Client) Fetch(endPoint string) *html.Node {
 	var (
 		resp       *http.Response
 		retryTimes float64
 		err        error
+		doc        *html.Node
 	)
 
-	req, _ := http.NewRequest("GET", url, nil)
-
-	req.Header.Set("User-Agent", getAgent())
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Connection", "keep-alive")
-
-	for resp, err = client.c.Do(req); (err != nil || (resp != nil && resp.StatusCode != 200)) && retryTimes < maxRetryTimes; retryTimes += 1 {
-		log.Printf("Http get err: %v, url: %v, req: %v", err, url, req)
+	req, _ := http.NewRequest("GET", endPoint, nil)
+	for retryTimes < maxRetryTimes {
+		req.Header.Set("User-Agent", getAgent())
+		resp, err = client.getClient().Do(req)
+		if err == nil && (resp != nil && resp.StatusCode == 200) {
+			break
+		}
+		log.Printf("Http get err: %v, url: %v", err, endPoint)
 		if resp != nil {
-			log.Printf("Http Responce: %v", resp)
+			log.Printf("Http Responce: %v", resp.StatusCode)
 		}
 		log.Printf("Retry %v times", retryTimes)
-		time.Sleep(time.Second * time.Duration((math.Pow(2, retryTimes))))
-		req.Header.Set("User-Agent", getAgent())
+		time.Sleep(time.Second * time.Duration((math.Pow(5, retryTimes))))
+		retryTimes++
 	}
 
-	defer resp.Body.Close()
-	doc, err := htmlquery.Parse(resp.Body)
-	if err != nil {
-		log.Fatal(err)
+	if resp != nil {
+		defer resp.Body.Close()
+		doc, err = htmlquery.Parse(resp.Body)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 	return doc
 }

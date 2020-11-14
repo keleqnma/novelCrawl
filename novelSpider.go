@@ -30,7 +30,7 @@ type CrawlNode struct {
 func (cNode *CrawlNode) Crawl() {
 	beginTime := time.Now()
 	log.Printf("开始爬取节点%v, 当前时间:%v\n", cNode.baseURL, beginTime)
-	cNode.client = httpClient.New()
+	cNode.client = httpClient.New(cNode.batch, cNode.baseURL)
 	doc := cNode.client.Fetch(cNode.baseURL)
 	cNode.nameRule.parse(doc)
 	cNode.contextRule.parse(doc)
@@ -57,13 +57,12 @@ func (cNode *CrawlNode) Crawl() {
 }
 
 const (
-	piliEndpoint  = "http://www.yuzhaiwu520.org"
-	danmeiCatgory = "/danmei/7_"
+	endpoint      = "http://www.yuzhaiwu520.org"
+	catgory       = "/danmei/7_"
 	novelPath     = "download/"
-	booksBatch    = 40
+	booksBatch    = 60
 	beginPage     = 1
 	endPage       = 296
-	maxRetryTimes = 10
 	sleepInterval = 10
 )
 
@@ -72,7 +71,7 @@ var client *httpClient.Client
 
 func Crawl() {
 	beginTime := time.Now()
-	client = httpClient.New()
+	client = httpClient.New(booksBatch, endpoint)
 	novelNums = 0
 	log.Printf("开始爬取, 当前时间:%v\n", beginTime)
 
@@ -96,11 +95,15 @@ func Crawl() {
 }
 
 func crawlPages(indexPage int, finCh chan int, wg *sync.WaitGroup) {
-	indexUrl := piliEndpoint + danmeiCatgory + strconv.Itoa(indexPage) + ".html"
-
+	indexUrl := endpoint + catgory + strconv.Itoa(indexPage) + ".html"
 	doc := client.Fetch(indexUrl)
+	if doc == nil {
+		log.Printf("page %v 解析失败\n", indexUrl)
+		return
+	}
 	nodes := htmlquery.Find(doc, `//div[@class="l"]/ul/li/span[1]/a`)
-
+	pageWg := &sync.WaitGroup{}
+	pageWg.Add(len(nodes))
 	for cur := 0; cur < len(nodes); {
 		books := <-finCh
 		for i := 0; i < books && cur < len(nodes); i++ {
@@ -113,10 +116,15 @@ func crawlPages(indexPage int, finCh chan int, wg *sync.WaitGroup) {
 			cur++
 		}
 	}
+	pageWg.Wait()
 }
 
 func crawlBookChaps(url string) {
 	doc := client.Fetch(url)
+	if doc == nil {
+		log.Printf("book %v 解析失败\n", url)
+		return
+	}
 	bookName := htmlquery.InnerText(htmlquery.FindOne(doc, `//div[@id="info"]/h1/text()`))
 	bookName = cvtStrEncoding(bookName, "gbk", "utf-8")
 	bookName += ".txt"
@@ -135,7 +143,7 @@ func crawlBookChaps(url string) {
 		if _, err = file.WriteString(contentName + "\n"); err != nil {
 			log.Fatal(err)
 		}
-		content := crawlChapContents(piliEndpoint + htmlquery.SelectAttr(node, "href"))
+		content := crawlChapContents(endpoint + htmlquery.SelectAttr(node, "href"))
 		if _, err = file.WriteString(content); err != nil {
 			log.Fatal(err)
 		}
@@ -149,6 +157,10 @@ func crawlBookChaps(url string) {
 
 func crawlChapContents(url string) (res string) {
 	doc := client.Fetch(url)
+	if doc == nil {
+		log.Printf("content %v 解析失败\n", url)
+		return
+	}
 	nodes := htmlquery.Find(doc, `//div[@id='content']/text()`)
 	for _, node := range nodes {
 		content := htmlquery.InnerText(node)
