@@ -13,6 +13,7 @@ import (
 	"cocoSpider/httpClient"
 
 	"github.com/antchfx/htmlquery"
+	"golang.org/x/net/html"
 )
 
 type CrawlNode struct {
@@ -60,7 +61,7 @@ const (
 	endpoint      = "http://www.yuzhaiwu520.org"
 	catgory       = "/danmei/7_"
 	novelPath     = "download/"
-	booksBatch    = 60
+	booksBatch    = 300
 	beginPage     = 1
 	endPage       = 296
 	sleepInterval = 10
@@ -102,8 +103,6 @@ func crawlPages(indexPage int, finCh chan int, wg *sync.WaitGroup) {
 		return
 	}
 	nodes := htmlquery.Find(doc, `//div[@class="l"]/ul/li/span[1]/a`)
-	pageWg := &sync.WaitGroup{}
-	pageWg.Add(len(nodes))
 	for cur := 0; cur < len(nodes); {
 		books := <-finCh
 		for i := 0; i < books && cur < len(nodes); i++ {
@@ -116,16 +115,22 @@ func crawlPages(indexPage int, finCh chan int, wg *sync.WaitGroup) {
 			cur++
 		}
 	}
-	pageWg.Wait()
 }
 
 func crawlBookChaps(url string) {
-	doc := client.Fetch(url)
-	if doc == nil {
-		log.Printf("book %v 解析失败\n", url)
-		return
+	var bookName string
+	var nameNode, doc *html.Node
+
+	for doc == nil || nameNode == nil {
+		doc = client.Fetch(url)
+		if doc == nil {
+			log.Printf("book %v 解析失败\n", url)
+			continue
+		}
+		nameNode = htmlquery.FindOne(doc, `//div[@id="info"]/h1/text()`)
 	}
-	bookName := htmlquery.InnerText(htmlquery.FindOne(doc, `//div[@id="info"]/h1/text()`))
+
+	bookName = htmlquery.InnerText(nameNode)
 	bookName = cvtStrEncoding(bookName, "gbk", "utf-8")
 	bookName += ".txt"
 	bookName = strings.ReplaceAll(bookName, "/", "or")
@@ -138,6 +143,9 @@ func crawlBookChaps(url string) {
 	time.Sleep(time.Second * time.Duration(rand.Int()%sleepInterval))
 	nodes := htmlquery.Find(doc, `//dl/dd/a`)
 	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
 		contentName := htmlquery.InnerText(node)
 		contentName = cvtStrEncoding(contentName, "gbk", "utf-8")
 		if _, err = file.WriteString(contentName + "\n"); err != nil {
@@ -163,6 +171,9 @@ func crawlChapContents(url string) (res string) {
 	}
 	nodes := htmlquery.Find(doc, `//div[@id='content']/text()`)
 	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
 		content := htmlquery.InnerText(node)
 		content = cvtStrEncoding(content, "gbk", "utf-8")
 		res += content

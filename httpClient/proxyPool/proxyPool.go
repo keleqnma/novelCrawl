@@ -9,7 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-clog/clog"
 	"github.com/henson/proxypool/pkg/models"
+)
+
+const (
+	DefaultTimeOut    = time.Second * 5
+	DefaultTestRounds = 5
 )
 
 type ProxyPool struct {
@@ -31,7 +37,7 @@ func New(endPoint string) *ProxyPool {
 	}
 	p.endPoint = endPoint
 	p.fetchOnceProxys()
-	go p.FetchProxys()
+	go p.fetchProxys()
 	return p
 }
 
@@ -44,12 +50,7 @@ func (p *ProxyPool) fetchOnceProxys() {
 			wg.Add(len(ips))
 			for _, ip := range ips {
 				go func(ip *models.IP) {
-					if speed, status := proxyTest(processIP(ip), p.endPoint); status == 200 && speed <= 2000 {
-						p.mu.Lock()
-						p.total++
-						p.ips = append(p.ips, ip)
-						p.mu.Unlock()
-					}
+					p.proxyTest(ip)
 					wg.Done()
 				}(ip)
 			}
@@ -63,14 +64,14 @@ func (p *ProxyPool) fetchOnceProxys() {
 	log.Printf("All getters finished,ips length:%v.\n", p.total)
 }
 
-func (p *ProxyPool) FetchProxys() {
+func (p *ProxyPool) fetchProxys() {
 	for {
 		time.Sleep(time.Minute * 10)
 		p.fetchOnceProxys()
 	}
 }
 
-func (p *ProxyPool) GetProxy() string {
+func (p *ProxyPool) GetProxyIP() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	ip := p.ips[rand.Int()%p.total]
@@ -84,37 +85,39 @@ func processIP(ip *models.IP) string {
 	return "http://" + ip.Data
 }
 
-func proxyTest(proxyIP string, endPoint string) (Speed int, Status int) {
+func (p *ProxyPool) proxyTest(ip *models.IP) {
 	// 解析代理地址
-	proxy, err := url.Parse(proxyIP)
+	proxy, err := url.Parse(processIP(ip))
 	if err != nil {
 		log.Printf("parse proxy failed:%v\n", err)
 		return
 	}
-	//设置网络传输
-	netTransport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxy),
-		MaxIdleConnsPerHost:   10,
-		ResponseHeaderTimeout: time.Second * time.Duration(50),
-	}
-	// 创建连接客户端
+	//设置网络传输, 创建连接客户端
 	httpClient := &http.Client{
-		Timeout:   time.Second * 10,
-		Transport: netTransport,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyURL(proxy),
+			MaxIdleConnsPerHost:   10,
+			ResponseHeaderTimeout: DefaultTimeOut,
+		},
 	}
-	begin := time.Now() //判断代理访问时间
-	// 使用代理IP访问测试地址
-	res, err := httpClient.Get(endPoint)
-	if err != nil {
-		log.Println(err)
-		return
+	for i := 0; i < DefaultTestRounds; i++ {
+		begin := time.Now()
+		res, err := httpClient.Get(p.endPoint)
+		if err != nil {
+			return
+		}
+		defer res.Body.Close()
+		timePassed := time.Since(begin)
+		if res.StatusCode != http.StatusOK {
+			return
+		}
+		if timePassed > DefaultTimeOut {
+			return
+		}
 	}
-	defer res.Body.Close()
-	speed := int(time.Since(begin).Nanoseconds() / 1000 / 1000) //ms
-	//判断是否成功访问，如果成功访问StatusCode应该为200
-	if res.StatusCode != http.StatusOK {
-		log.Println(err)
-		return
-	}
-	return speed, res.StatusCode
+	p.mu.Lock()
+	p.total++
+	p.ips = append(p.ips, ip)
+	p.mu.Unlock()
+	clog.Info("[proxy-test] %v test success.", ip.Data)
 }

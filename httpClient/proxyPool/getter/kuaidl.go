@@ -28,6 +28,7 @@ func KDL() (result []*models.IP) {
 		} else if Type == "HTTP" {
 			IP.Type1 = "http"
 		}
+		clog.Info("[kuaidaili] ip.Data = %s,ip.Type = %s,%s ip.Speed = %d", IP.Data, IP.Type1, IP.Type2, IP.Speed)
 		result = append(result, IP)
 	}
 

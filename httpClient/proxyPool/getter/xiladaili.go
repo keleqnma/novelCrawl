@@ -40,6 +40,7 @@ func Xilidali() (result []*models.IP) {
 						Data:  ip,
 						Type1: "http",
 					})
+					clog.Info("[kuaidaili] ip.Data = %s,ip.Type = %s", ip, "http")
 				}
 			}
 			defer wg.Done()

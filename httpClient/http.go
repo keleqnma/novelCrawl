@@ -2,11 +2,13 @@ package httpClient
 
 import (
 	"cocoSpider/dnsCache"
+	"cocoSpider/httpClient/proxyPool"
 	"log"
 	"math"
 	"math/rand"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -15,8 +17,8 @@ import (
 )
 
 type Client struct {
-	dnsCache *dnsCache.Resolver
-	//proxyPool  *proxyPool.ProxyPool
+	dnsCache   *dnsCache.Resolver
+	proxyPool  *proxyPool.ProxyPool
 	clients    []*http.Client
 	clientSize int
 }
@@ -26,18 +28,17 @@ const maxRetryTimes = 12
 func New(clientSize int, endPoint string) *Client {
 	client := &Client{}
 	client.dnsCache = dnsCache.New(time.Minute * 5)
-	//client.proxyPool = proxyPool.New(endPoint)
+	client.proxyPool = proxyPool.New(endPoint)
 	for i := 0; i < clientSize; i++ {
-		// proxy, err := url.Parse(client.proxyPool.GetProxy())
-		// if err != nil {
-		// 	log.Printf("parse proxy failed:%v\n", err)
-		// 	continue
-		// }
+		proxy, err := url.Parse(client.proxyPool.GetProxyIP())
+		if err != nil {
+			log.Printf("parse proxy failed:%v\n", err)
+			continue
+		}
 		client.clients = append(client.clients, &http.Client{
-			Timeout: time.Second * 10,
 			Transport: &http.Transport{
-				//Proxy:               http.ProxyURL(proxy),
-				MaxIdleConnsPerHost: clientSize,
+				Proxy:               http.ProxyURL(proxy),
+				MaxIdleConnsPerHost: clientSize * 2,
 				Dial: func(network string, address string) (net.Conn, error) {
 					separator := strings.LastIndex(address, ":")
 					ip, _ := client.dnsCache.FetchOneString(address[:separator])
@@ -65,7 +66,8 @@ func (client *Client) Fetch(endPoint string) *html.Node {
 	req, _ := http.NewRequest("GET", endPoint, nil)
 	for retryTimes < maxRetryTimes {
 		req.Header.Set("User-Agent", getAgent())
-		resp, err = client.getClient().Do(req)
+		c := client.getClient()
+		resp, err = c.Do(req)
 		if err == nil && (resp != nil && resp.StatusCode == 200) {
 			break
 		}
